@@ -91,7 +91,7 @@ LIBSSP_VERSION='1.0'
 # Version list: http://downloads.asterisk.org/pub/telephony/asterisk/
 # Version list: http://downloads.asterisk.org/pub/telephony/asterisk/releases/
 # Version list: https://github.com/asterisk/asterisk/tags 
-ASTERISK_VERSION='19.0.0'
+ASTERISK_VERSION='19.2.0'
 INSTALL_ASTERISK=''
 
 # FreePBX
@@ -929,7 +929,7 @@ if [[ "$INSTALL_SOX" =~ true || "$INSTALL_ALL" =~ true ]]
   # sys	0m17.874s
   # (total 4m40.2s)
 
-  # Build with --parallel 4
+  # Build with make -j 4
   # real	1m1.610s
   # user	2m4.801s
   # sys	  0m17.947s
@@ -1029,6 +1029,33 @@ then
   # NB: pjproject (bundled) includes a version of libsrtp... does asterisk still complain about srtp in config output?
   # https://wiki.asterisk.org/wiki/display/AST/Installing+libsrtp
 
+  # useful thread on build errors when building asterisk on alpine https://community.asterisk.org/t/asterisk-compile-on-alpine/88429
+  # which leads to https://git.alpinelinux.org/aports/tree/main/asterisk
+  # make NOISY_BUILD=yes $PARALLEL_MAKE
+
+  ASTERISK_PATCH_LIST='/config/downloads/asterisk-alpine-patches/asterisk-alpine-patch-list.txt'
+  ASTERISK_PATCH_DIR='/config/downloads/asterisk-alpine-patches/patches'
+  # NB: patch for CVE-2021-32558 is already applied in Asterisk 19.0.0+
+
+  mkdir -p "$ASTERISK_PATCH_DIR"
+  cd "$ASTERISK_PATCH_DIR" || exit 1
+  while IFS=$'\n' read -r url
+  do
+    echo "URL to download is $url"
+    wget -c "$url"
+    # Sleep required to prevent "HTTP/1.1 429 Too Many Requests" error and file download failures
+    sleep 1s
+  done < "$ASTERISK_PATCH_LIST"
+
+  cd $ASTERISK_SRC_DIR
+  for PATCH_FILE in $(ls -1 $ASTERISK_PATCH_DIR/*.patch)
+  do
+    echo "Patch file to be worked on is $PATCH_FILE"
+    # Use --forward option with patch to stop already applied patches being applied (or prompts for what to do appearing)
+    # Use  --dry-run option to preview changes
+    patch --verbose --force --strip=1 --input "$PATCH_FILE"
+  done
+
   # Relevant configure script options
   # --prefix=PREFIX             (install architecture-independent files in PREFIX [/usr/local])
   # --exec-prefix=EPREFIX       (install architecture-dependent files in EPREFIX [PREFIX])
@@ -1041,14 +1068,37 @@ then
   # --with-pjproject=PATH (use PJPROJECT files in PATH)
 
   # cd /usr/src/asterisk/ && /usr/src/asterisk/configure --enable-permanent-dlopen --with-gnu-ld --with-jansson-bundled=yes --with-pjproject-bundled=yes | tee /scripts/asterisk_configure_output.txt
+  #  --with-pjproject-bundled=yes  - Removing bundled pjproject due to compilation errors
   ./configure \
     --enable-permanent-dlopen \
     --with-gnu-ld \
     --with-jansson-bundled=yes \
-    --with-pjproject-bundled=yes | tee "$CONFIG_OUTPUT"
+    --with-pjproject-bundled=no | tee "$CONFIG_OUTPUT"
 
-  # make $PARALLEL_MAKE
+  # NB: make menuselect is interactive
+  make menuselect
+  # TODO: work out how to make menuselect automatic
+
+  # TODO: Exeriment with configure options including removing the --with-gnu-ld configure option and removing --jansson-bundled
+  make $PARALLEL_MAKE
+  # NB: Tried removing libresample which was related to the error about needing to recompile with -fPIC as a compiler option as adding ASTCFLAGS="-fPIC" maje -j 4 did not work
+  # This fixed it! asterisk successfully compiled for the first time on Alpine, the error about compiling with -fPIC referred to libresample --> READ THE ERROR PROPERLY THE FIRST TIME!
+  # TODO: install libresample from source and compile it with -fPIC
+  # TODO: resolve the lua problem in ./configure
+
+  # Build with -j 4
+  # real	2m44.826s
+  # user	8m7.235s
+  # sys 	0m54.824s
+  # (total 11m46s)
+
+  # Build without any parallelism
+  # 
+  # (total )
+
+  make install
 fi
+
 ############################################################
 # Install, build and configure FreePBX and its dependencies
 ############################################################
